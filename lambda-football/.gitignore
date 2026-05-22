@@ -1,0 +1,9 @@
+# Build artifacts
+bootstrap
+lambda.zip
+
+# Local test binary
+*.test
+
+# macOS
+.DS_Store
