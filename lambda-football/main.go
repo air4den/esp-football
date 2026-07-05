@@ -9,12 +9,11 @@ import (
 	"time"
 )
 
-// ── Configuration ─────────────────────────────────────────────────────────────
+// Configuration
+const teamID = "464" 	// 364 = Liverpool FC. Change to any ESPN soccer team ID.
+						// Other ESPN team IDs: 660=USMNT, 655=Saudi Arabia, 382=Man City, 478=France, 464=Norway
 
-const teamID = "218" // 364 = Liverpool FC. Change to any ESPN soccer team ID.
-// Examples: 660=USA national, 655=Saudi Arabia, 382=Man City, 478=France
-
-// ── URLs ──────────────────────────────────────────────────────────────────────
+// URLs
 
 const (
 	coreEventsURL = "https://sports.core.api.espn.com/v2/sports/soccer/teams/" + teamID + "/events?limit=20"
@@ -26,7 +25,7 @@ var (
 	leagueEventRe = regexp.MustCompile(`leagues/([^/]+)/events/(\d+)`)
 )
 
-// ── ESPN JSON structs ─────────────────────────────────────────────────────────
+// ESPN JSON structs
 
 type coreEventsResp struct {
 	Items []struct {
@@ -43,8 +42,20 @@ type summaryStatus struct {
 	Type         summaryStatusType `json:"type"`
 }
 
+type summaryTeamLogo struct {
+	Href string `json:"href"`
+}
+
 type summaryTeam struct {
-	Abbreviation string `json:"abbreviation"`
+	Abbreviation string           `json:"abbreviation"`
+	Logos        []summaryTeamLogo `json:"logos"`
+}
+
+func (t summaryTeam) LogoURL() string {
+	if len(t.Logos) > 0 {
+		return t.Logos[0].Href
+	}
+	return ""
 }
 
 type summaryCompetitor struct {
@@ -75,6 +86,8 @@ type response struct {
 	AwayTeam      string `json:"away_team"`
 	HomeScore     string `json:"home_score"`
 	AwayScore     string `json:"away_score"`
+	HomeImageURL  string `json:"home_image_url,omitempty"`
+	AwayImageURL  string `json:"away_image_url,omitempty"`
 	MatchClock    string `json:"match_clock"`
 	GameState     string `json:"game_state"`
 	SleepSeconds  int    `json:"sleep_seconds"`
@@ -225,6 +238,8 @@ func run() response {
 				AwayTeam:     away.Team.Abbreviation,
 				HomeScore:    scoreStr(home.Score),
 				AwayScore:    scoreStr(away.Score),
+				HomeImageURL: home.Team.LogoURL(),
+				AwayImageURL: away.Team.LogoURL(),
 				MatchClock:   clockStr(comp.Status.DisplayClock),
 				GameState:    "in",
 				SleepSeconds: 60,
@@ -237,6 +252,8 @@ func run() response {
 					AwayTeam:     away.Team.Abbreviation,
 					HomeScore:    scoreStr(home.Score),
 					AwayScore:    scoreStr(away.Score),
+					HomeImageURL: home.Team.LogoURL(),
+					AwayImageURL: away.Team.LogoURL(),
 					MatchClock:   clockStr(comp.Status.DisplayClock),
 					GameState:    "post",
 					SleepSeconds: 43200,

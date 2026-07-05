@@ -1,6 +1,6 @@
 # Build artifacts
 bootstrap
-lambda.zip
+*.zip
 
 # Local test binary
 *.test
