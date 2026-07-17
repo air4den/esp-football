@@ -1,0 +1,21 @@
+menu "ESP Football Config"
+
+    config FOOTBALL_WIFI_SSID
+        string "WiFi SSID"
+        default "myssid"
+        help
+            SSID of the WiFi network to connect to.
+
+    config FOOTBALL_WIFI_PASSWORD
+        string "WiFi Password"
+        default "mypassword"
+        help
+            Password for the WiFi network.
+
+    config FOOTBALL_LAMBDA_URL
+        string "Lambda function URL"
+        default "https://your-lambda-url.lambda-url.us-east-2.on.aws/"
+        help
+            Public HTTPS URL of the esp-football Lambda function.
+
+endmenu

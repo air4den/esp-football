@@ -1,9 +1,0 @@
-# Build artifacts
-bootstrap
-*.zip
-
-# Local test binary
-*.test
-
-# macOS
-.DS_Store

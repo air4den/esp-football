@@ -14,7 +14,6 @@ const teamID = "464" 	// 364 = Liverpool FC. Change to any ESPN soccer team ID.
 						// Other ESPN team IDs: 660=USMNT, 655=Saudi Arabia, 382=Man City, 478=France, 464=Norway
 
 // URLs
-
 const (
 	coreEventsURL = "https://sports.core.api.espn.com/v2/sports/soccer/teams/" + teamID + "/events?limit=20"
 	summaryFmt    = "https://site.api.espn.com/apis/site/v2/sports/soccer/%s/summary?event=%s"
@@ -25,7 +24,7 @@ var (
 	leagueEventRe = regexp.MustCompile(`leagues/([^/]+)/events/(\d+)`)
 )
 
-// ESPN JSON structs
+// ── ESPN JSON structs ─────────────────────────────────────────────────────────
 
 type coreEventsResp struct {
 	Items []struct {
@@ -47,7 +46,7 @@ type summaryTeamLogo struct {
 }
 
 type summaryTeam struct {
-	Abbreviation string           `json:"abbreviation"`
+	Abbreviation string            `json:"abbreviation"`
 	Logos        []summaryTeamLogo `json:"logos"`
 }
 
@@ -61,7 +60,7 @@ func (t summaryTeam) LogoURL() string {
 type summaryCompetitor struct {
 	ID       string      `json:"id"`
 	HomeAway string      `json:"homeAway"`
-	Score    interface{} `json:"score"` // int or nil
+	Score    interface{} `json:"score"` // number or nil
 	Team     summaryTeam `json:"team"`
 }
 
@@ -79,24 +78,43 @@ type summaryResp struct {
 	Header summaryHeader `json:"header"`
 }
 
-// ── Output ────────────────────────────────────────────────────────────────────
+// ── Output structs ────────────────────────────────────────────────────────────
 
-type response struct {
-	HomeTeam      string `json:"home_team"`
-	AwayTeam      string `json:"away_team"`
-	HomeScore     string `json:"home_score"`
-	AwayScore     string `json:"away_score"`
-	HomeImageURL  string `json:"home_image_url,omitempty"`
-	AwayImageURL  string `json:"away_image_url,omitempty"`
-	MatchClock    string `json:"match_clock"`
-	GameState     string `json:"game_state"`
-	SleepSeconds  int    `json:"sleep_seconds"`
-	NextMatchDate string `json:"next_match_date,omitempty"` // YYYY-MM-DD UTC
-	NextMatchTime string `json:"next_match_time,omitempty"` // HH:MMZ
-	NextOpponent  string `json:"next_opponent,omitempty"`   // abbreviation
+// currentMatch describes a match that is live or just finished.
+type currentMatch struct {
+	HomeTeam     string `json:"home_team"`
+	AwayTeam     string `json:"away_team"`
+	HomeScore    string `json:"home_score"`
+	AwayScore    string `json:"away_score"`
+	HomeImageURL string `json:"home_image_url,omitempty"`
+	AwayImageURL string `json:"away_image_url,omitempty"`
+	MatchClock   string `json:"match_clock"`
 }
 
-func noneResponse() response { return response{GameState: "none", SleepSeconds: 43200} }
+// nextMatch describes the next scheduled match.
+type nextMatch struct {
+	Date             string `json:"date"`            // YYYY-MM-DD UTC
+	Time             string `json:"time"`            // HH:MMZ
+	Opponent         string `json:"opponent"`        // abbreviation
+	OpponentImageURL string `json:"opponent_image_url,omitempty"`
+}
+
+// response is the top-level Lambda output.
+// game_state values: "in", "pre", "post", "none"
+//   - "in":   match is live       → current_match populated, next_match null
+//   - "post": match finished today → current_match populated, next_match populated if available
+//   - "pre":  match today, not yet kicked off → current_match null, next_match populated
+//   - "none": no match today       → current_match null, next_match populated if available
+type response struct {
+	GameState    string        `json:"game_state"`
+	SleepSeconds int           `json:"sleep_seconds"`
+	CurrentMatch *currentMatch `json:"current_match"`
+	NextMatch    *nextMatch    `json:"next_match"`
+}
+
+func noneResponse() response {
+	return response{GameState: "none", SleepSeconds: 43200}
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -152,19 +170,75 @@ func clockStr(p *string) string {
 	return *p
 }
 
-func opponent(comps []summaryCompetitor) string {
-	for _, c := range comps {
-		if c.ID != teamID {
-			return c.Team.Abbreviation
+// opponentOf returns the competitor that is not our configured team.
+func opponentOf(comps []summaryCompetitor) *summaryCompetitor {
+	for i := range comps {
+		if comps[i].ID != teamID {
+			return &comps[i]
 		}
 	}
-	return ""
+	return nil
+}
+
+// homeAwayOf returns the home and away competitors.
+func homeAwayOf(comps []summaryCompetitor) (home, away summaryCompetitor) {
+	for _, c := range comps {
+		if c.HomeAway == "home" {
+			home = c
+		} else {
+			away = c
+		}
+	}
+	return
+}
+
+// findNextMatch scans event refs starting at startIdx for the first future
+// "pre" event and returns a populated nextMatch, or nil if none found.
+func findNextMatch(items []struct{ Ref string `json:"$ref"` }, startIdx int, now time.Time) *nextMatch {
+	for i := startIdx; i < len(items); i++ {
+		m := leagueEventRe.FindStringSubmatch(items[i].Ref)
+		if m == nil {
+			continue
+		}
+		league, eventID := m[1], m[2]
+
+		var s summaryResp
+		if err := fetchJSON(fmt.Sprintf(summaryFmt, league, eventID), &s); err != nil {
+			continue
+		}
+		if len(s.Header.Competitions) == 0 {
+			continue
+		}
+
+		comp := s.Header.Competitions[0]
+		if comp.Status.Type.State != "pre" {
+			continue
+		}
+
+		kickoff, err := parseDate(comp.Date)
+		if err != nil || !kickoff.After(now) {
+			continue
+		}
+
+		opp := opponentOf(comp.Competitors)
+		nm := &nextMatch{
+			Date:     kickoff.UTC().Format("2006-01-02"),
+			Time:     kickoff.UTC().Format("15:04") + "Z",
+			Opponent: "",
+		}
+		if opp != nil {
+			nm.Opponent = opp.Team.Abbreviation
+			nm.OpponentImageURL = opp.Team.LogoURL()
+		}
+		return nm
+	}
+	return nil
 }
 
 // ── Core logic ────────────────────────────────────────────────────────────────
 
 func run() response {
-	// Step 1: get upcoming events across all competitions
+	// Step 1: fetch the team's event list
 	var core coreEventsResp
 	if err := fetchJSON(coreEventsURL, &core); err != nil || len(core.Items) == 0 {
 		return noneResponse()
@@ -172,8 +246,8 @@ func run() response {
 
 	now := time.Now().UTC()
 
-	// Step 2: for each event ref, fetch summary and find first non-post
-	for _, item := range core.Items {
+	// Step 2: iterate events chronologically, find the first relevant one
+	for idx, item := range core.Items {
 		m := leagueEventRe.FindStringSubmatch(item.Ref)
 		if m == nil {
 			continue
@@ -196,58 +270,46 @@ func run() response {
 			continue
 		}
 
-		opp := opponent(comp.Competitors)
-		nextDate := kickoff.UTC().Format("2006-01-02")
-		nextTime := kickoff.UTC().Format("15:04") + "Z"
-
-		var home, away summaryCompetitor
-		for _, cp := range comp.Competitors {
-			if cp.HomeAway == "home" {
-				home = cp
-			} else {
-				away = cp
-			}
-		}
+		home, away := homeAwayOf(comp.Competitors)
 
 		switch state {
 		case "pre":
+			// Build next_match from this event itself
+			opp := opponentOf(comp.Competitors)
+			nm := &nextMatch{
+				Date:     kickoff.UTC().Format("2006-01-02"),
+				Time:     kickoff.UTC().Format("15:04") + "Z",
+				Opponent: "",
+			}
+			if opp != nil {
+				nm.Opponent = opp.Team.Abbreviation
+				nm.OpponentImageURL = opp.Team.LogoURL()
+			}
+
 			if !sameUTCDay(kickoff, now) {
+				// Match is in the future but not today — show as "none" with next info
 				return response{
-					GameState:     "none",
-					SleepSeconds:  43200,
-					NextMatchDate: nextDate,
-					NextMatchTime: nextTime,
-					NextOpponent:  opp,
+					GameState:    "none",
+					SleepSeconds: 43200,
+					NextMatch:    nm,
 				}
 			}
+			// Match is today, count down to kickoff
 			secs := int(time.Until(kickoff).Seconds())
 			if secs < 1 {
 				secs = 1
 			}
 			return response{
-				GameState:     "pre",
-				SleepSeconds:  secs,
-				NextMatchDate: nextDate,
-				NextMatchTime: nextTime,
-				NextOpponent:  opp,
+				GameState:    "pre",
+				SleepSeconds: secs,
+				NextMatch:    nm,
 			}
 
 		case "in":
 			return response{
-				HomeTeam:     home.Team.Abbreviation,
-				AwayTeam:     away.Team.Abbreviation,
-				HomeScore:    scoreStr(home.Score),
-				AwayScore:    scoreStr(away.Score),
-				HomeImageURL: home.Team.LogoURL(),
-				AwayImageURL: away.Team.LogoURL(),
-				MatchClock:   clockStr(comp.Status.DisplayClock),
 				GameState:    "in",
 				SleepSeconds: 60,
-			}
-
-		case "post":
-			if sameUTCDay(kickoff, now) {
-				return response{
+				CurrentMatch: &currentMatch{
 					HomeTeam:     home.Team.Abbreviation,
 					AwayTeam:     away.Team.Abbreviation,
 					HomeScore:    scoreStr(home.Score),
@@ -255,11 +317,29 @@ func run() response {
 					HomeImageURL: home.Team.LogoURL(),
 					AwayImageURL: away.Team.LogoURL(),
 					MatchClock:   clockStr(comp.Status.DisplayClock),
+				},
+			}
+
+		case "post":
+			if sameUTCDay(kickoff, now) {
+				// Match finished today — return score and look ahead for next match
+				return response{
 					GameState:    "post",
 					SleepSeconds: 43200,
+					CurrentMatch: &currentMatch{
+						HomeTeam:     home.Team.Abbreviation,
+						AwayTeam:     away.Team.Abbreviation,
+						HomeScore:    scoreStr(home.Score),
+						AwayScore:    scoreStr(away.Score),
+						HomeImageURL: home.Team.LogoURL(),
+						AwayImageURL: away.Team.LogoURL(),
+						MatchClock:   clockStr(comp.Status.DisplayClock),
+					},
+					// Search remaining events for next upcoming match
+					NextMatch: findNextMatch(core.Items, idx+1, now),
 				}
 			}
-			// post but not today — keep looking for a future event
+			// post but not today — keep scanning forward
 			continue
 		}
 	}

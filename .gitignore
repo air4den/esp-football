@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+**/.DS_Store
+
+# ── ESP ───────────────────────────────────────────────────────────────────────
+esp/build/
+esp/sdkconfig
+esp/sdkconfig.old
+esp/sdkconfig.defaults.local
+esp/managed_components/
+esp/.cache/
+
+# ── Lambda ────────────────────────────────────────────────────────────────────
+lambda-football/bootstrap
+lambda-football/*.zip
+lambda-football/*.test
